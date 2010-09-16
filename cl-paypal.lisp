@@ -72,6 +72,15 @@
 (defvar *active-transactions* (make-hash-table :test #'equalp))
 (defvar *transaction-ips* nil)
 
+(defun all-transactions ()
+  (let ((result (list)))
+    (maphash #'(lambda (key val) (declare (ignore val))
+		       (push key result)) *active-transactions*)
+    (nreverse result)))
+
+(defun remove-all-transactions ()
+  (mapc #'unregister-transaction (all-transactions)))
+
 (defun register-transaction (token amount currencycode ip)
   (when (gethash token *active-transactions*)
     (error "Attempt to register already existing transaction with token ~S." token))
