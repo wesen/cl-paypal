@@ -31,8 +31,6 @@
 (defvar *paypal-max-transaction-per-ip* 5
   "max number of simultaneous transaction per ip")
 
-
-
 (defun init (paypal-api-url paypal-user paypal-password paypal-signature
 	     paypal-return-url paypal-cancel-url &key (useraction "continue") (currencycode "USD"))
   (setf *paypal-api-url* paypal-api-url

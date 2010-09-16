@@ -7,6 +7,8 @@
    #:request
    #:make-express-checkout-url
    #:get-and-do-express-checkout
+   #:do-express-checkout
+   #:get-express-checkout-info
    #:paypal-error
    #:request-error
    #:http-request-error

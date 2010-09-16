@@ -23,18 +23,34 @@
 (defun decode-response (response)
   "Decode a paypal response string, which is URL encoded and follow
   list encoding rules.  Returns the parameters as a plist."
-  (let ((hash (make-hash-table)))
+  (let ((hash (make-hash-table :test 'equal)))
     (dolist (entry (cl-ppcre:split "&" response))
       (destructuring-bind (parameter-string value) (cl-ppcre:split "=" entry :limit 2)
+	(setf parameter-string
+	      (cl-ppcre:regex-replace "PAYMENTREQUEST_0_" parameter-string ""))
         (multiple-value-bind (match registers) (cl-ppcre:scan-to-strings "^L_(.*?)([0-9]+)$" parameter-string)
           (if match
               (let* ((parameter (intern (aref registers 0) :keyword))
                      (index (parse-integer (aref registers 1)))
                      (previous-value (gethash parameter hash)))
-                (unless (= (length previous-value) index)
-                  (error 'response-error :invalid-parameter parameter-string :response response))
-                (setf (gethash parameter hash) (append previous-value (list (hunchentoot:url-decode value :utf-8)))))
-              (setf (gethash (intern parameter-string :keyword) hash) (hunchentoot:url-decode value :utf-8))))))
+		(format t "parameter ~A string ~A index ~A prev-value ~A value ~A~%"
+			parameter parameter-string index previous-value (hunchentoot:url-decode value :utf-8))
+		(if (= index 0)
+		    (progn
+		      (setf (gethash parameter hash)
+			    (hunchentoot:url-decode value :utf-8)))
+		    (progn
+		      (if (listp previous-value)
+			  (progn
+			    (unless (= (length previous-value) index)
+			      (error 'response-error :invalid-parameter parameter-string :response response))
+			    (setf (gethash parameter hash)
+				  (append previous-value (list (hunchentoot:url-decode value :utf-8)))))
+			  (setf (gethash parameter hash)
+				(list previous-value (hunchentoot:url-decode value :utf-8)))))))
+	      (progn
+		(setf (gethash (intern parameter-string :keyword) hash)
+		      (hunchentoot:url-decode value :utf-8)))))))
     (loop for key being the hash-keys of hash
          collect key
          collect (gethash key hash))))
@@ -47,7 +63,7 @@
       (drakma:http-request *paypal-api-url*
                            :method :post
                            :parameters (append (list (cons "METHOD" method)
-                                                     (cons "VERSION" "52.0")
+                                                     (cons "VERSION" "63.0")
                                                      (cons "USER" *paypal-user*)
                                                      (cons "PWD" *paypal-password*)
                                                      (cons "SIGNATURE" *paypal-signature*)
@@ -82,9 +98,11 @@
   (mapc #'unregister-transaction (all-transactions)))
 
 (defun register-transaction (token amount currencycode ip)
+
   (when (gethash token *active-transactions*)
     (error "Attempt to register already existing transaction with token ~S." token))
      ;; Garbage collection
+
   (if (>= (hash-table-count *active-transactions*) *paypal-max-active-transactions*)
       (with-hash-table-iterator (next-entry *active-transactions*)
         (loop (multiple-value-bind (more key value) (next-entry)
@@ -92,9 +110,11 @@
              (when (> (- (get-universal-time) (fourth value))
                     (* 60 *paypal-max-token-live-period*))
                  (unregister-transaction key))))))
+
   (if (>= (count ip *transaction-ips* :test #'equal) *paypal-max-transaction-per-ip*)
       (error "Attempt to make more than ~A transactions per IP" *paypal-max-transaction-per-ip*)
       (push ip *transaction-ips*))
+  
   (setf (gethash token *active-transactions*) 
         (list amount currencycode ip (get-universal-time))))
 
@@ -112,6 +132,7 @@
 
 (defun make-express-checkout-url (amount 
                                   ip
+				  &rest args
 				  &key
 				  (return-url *paypal-return-url*)
 				  (cancel-url *paypal-cancel-url*)
@@ -120,20 +141,47 @@
                                   (sandbox t)
                                   (hostname (if sandbox
                                               "www.sandbox.paypal.com"
-                                              "www.paypal.com")))
+                                              "www.paypal.com"))
+				  &allow-other-keys)
+  (dolist (key '(:return-url :cancel-url :useraction :currencycode :sandbox :hostname))
+    (remf args key))
   (let* ((amt (format nil "~,2F" amount))
-	 (token (getf (request "SetExpressCheckout"
-                               :amt amt
-			       :currencycode currencycode
-                               :returnurl return-url
-                               :cancelurl cancel-url
-                               :paymentaction "Sale")
-                      :token)))
+	 (res (apply #'request "SetExpressCheckout"
+			       :returnurl return-url
+			       :cancelurl cancel-url
+			       :paymentrequest_0_amt amt
+			       :paymentrequest_0_currencycode currencycode
+			       :paymentrequest_0_paymentaction "Sale"
+			       args))
+	 (token (getf res :token)))
     (register-transaction token amt currencycode ip)
-    (format nil "https://~A/webscr?cmd=_express-checkout&token=~A&useraction=~A"
-            hostname
-	    (hunchentoot:url-encode token)
-	    (hunchentoot:url-encode useraction))))
+    (values
+     (format nil "https://~A/webscr?cmd=_express-checkout&token=~A"
+	     hostname
+	     (hunchentoot:url-encode token))
+     res)))
+
+(defun get-express-checkout-info (token)
+  (request "GetExpressCheckoutDetails" :token token))
+
+(defun do-express-checkout (token)
+  (let* ((txn (find-transaction token nil)))
+    (if txn
+        (destructuring-bind (amount currencycode ip time) txn
+          (declare (ignore ip time))
+          (let* ((response (request "GetExpressCheckoutDetails" :token token))
+                 (payerid (getf response :payerid))
+                 (result (request "DoExpressCheckoutPayment"
+                                  :token token
+                                  :payerid payerid
+                                  ;; amt and currencycode are not returned by GetExpressCheckoutDetails 
+                                  :paymentrequest_0_amt amount
+                                  :paymentrequest_0_currencycode currencycode 
+                                  :paymentrequest_0_paymentaction "Sale"))
+                 (success-p (string-equal "Success" (getf result :paymentinfo_0_ack))))
+            (when success-p
+              (unregister-transaction token))
+	    (values result response))))))
 
 (defun get-and-do-express-checkout (success failure)
   (with-output-to-string (*standard-output*)
@@ -148,10 +196,10 @@
                                   :token token
                                   :payerid payerid
                                   ;; amt and currencycode are not returned by GetExpressCheckoutDetails 
-                                  :amt amount
-                                  :currencycode currencycode 
-                                  :paymentaction "Sale"))
-                 (success-p (string-equal "Success" (getf result :ack))))
+                                  :paymentrequest_0_amt amount
+                                  :paymentrequest_0_currencycode currencycode 
+                                  :paymentrequest_0_paymentaction "Sale"))
+                 (success-p (string-equal "Success" (getf result :paymentinfo_0_ack))))
             (when success-p
               (unregister-transaction token))
             (if success-p 
