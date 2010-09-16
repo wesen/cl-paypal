@@ -47,7 +47,7 @@
 ;; send-user "wangyi_1228286489_per@yeah.net" 
 ;; send-user's password "228286734"
 
-(defun test-express-checkout (&key (response-port 8080) (response-host "192.168.1.24"))
+(defun test-express-checkout (&key (response-port 8080) (response-host "127.0.0.1"))
   (cl-paypal:init "https://api-3t.sandbox.paypal.com/nvp" 
 		"hans.huebner_api1.gmail.com"
 		"62QFQPLEMM6P3M25"
