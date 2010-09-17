@@ -28,6 +28,8 @@
       (destructuring-bind (parameter-string value) (cl-ppcre:split "=" entry :limit 2)
 	(setf parameter-string
 	      (cl-ppcre:regex-replace "PAYMENTREQUEST_0_" parameter-string ""))
+	(setf parameter-string
+	      (cl-ppcre:regex-replace "PAYMENTINFO_0_" parameter-string ""))
         (multiple-value-bind (match registers) (cl-ppcre:scan-to-strings "^L_(.*?)([0-9]+)$" parameter-string)
           (if match
               (let* ((parameter (intern (aref registers 0) :keyword))
@@ -156,9 +158,10 @@
 	 (token (getf res :token)))
     (register-transaction token amt currencycode ip)
     (values
-     (format nil "https://~A/webscr?cmd=_express-checkout&token=~A"
+     (format nil "https://~A/webscr?cmd=_express-checkout&token=~A&useraction=~A"
 	     hostname
-	     (hunchentoot:url-encode token))
+	     (hunchentoot:url-encode token)
+	     useraction)
      res)))
 
 (defun get-express-checkout-info (token)
